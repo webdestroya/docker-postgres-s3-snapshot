@@ -13,48 +13,49 @@ if [[ $conn_url == "none" ]]; then
   conn_url=$(printf "postgres://%s:%s@%s:%s/%s" $conn_db_user $conn_db_pass $conn_db_host $conn_db_port $conn_db_name)
 fi
 
-# If the connection url is "none", then build it from various env vars
-
 # AWS KEYS
 # S3 SETTINGS - if not provided, assume IAM role is used
 # s3 encryption (sse)
 
 s3_bucket=${S3_BUCKET?"You must include a bucket name"}
-s3_prefix=${S3_PREFIX-}
-s3_region=${S3_REGION-"us-east-1"}
+s3_prefix=${S3_PREFIX-"scheduled-"}
+s3_acl=${S3_ACL-private}
 aws_access_key=${S3_ACCESS_KEY-none}
 aws_secret_key=${S3_SECRET_KEY-none}
+
+dump_root=${DUMP_FOLDER-"/tmp"}
 
 if [[ $aws_access_key != "none" && $aws_secret_key != "none" ]]; then
   # Setup the credentials
   export AWS_ACCESS_KEY_ID=$aws_access_key
   export AWS_SECRET_ACCESS_KEY=$aws_secret_key
-  export AWS_DEFAULT_REGION=$s3_region
+  export AWS_DEFAULT_REGION=us-east-1
 fi
 
-pgdump_format=${PGDUMP_FORMAT-custom}
+pgdump_format=${DUMP_FORMAT-custom}
 pgdump_jobs=${THREADS-1}
 
-echo "PREFIX: [$s3_prefix]"
-
-exit 1
-# number of jobs?
+# TODO: before we bother with the whole backup, check the creds ??
 
 backup_timestamp=$(date -u +%Y%m%d%H%M%S)
 
-pg_dump $conn_url --format=$pgdump_format --jobs=$pgdump_jobs --no-owner --file=/tmp/snapshot.dump
+pg_dump $conn_url --format=$pgdump_format --verbose --jobs=$pgdump_jobs --no-owner --file=$dump_root/snapshot.dump
 
 if [ $? -ne 0 ]; then
   echo "ERROR: pg_dump failed, unable to continue"
   exit $?
 fi
 
-aws s3 cp <localfile>
+echo "Uploading snapshot to S3"
+aws s3 cp $dump_root/snapshot.dump s3://${s3_bucket}/${s3_prefix}${backup_timestamp}.dump --acl $s3_acl
+s3_ret=$?
 
-# upload file stream?
-aws s3 cp - s3://mybucket/stream.txt
+rm -f $dump_root/snapshot.dump
 
+if [ $s3_ret -eq 0 ]; then
+  echo "Successfully uploaded '/${s3_prefix}${backup_timestamp}.dump' to S3!"
+else
+  echo "ERROR: Failed to upload to S3"
+fi
 
-
-# obliterate file
-# shred -u -v <file>
+exit $s3_ret

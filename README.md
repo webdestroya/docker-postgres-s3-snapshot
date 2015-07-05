@@ -3,61 +3,55 @@
 
 [![](https://badge.imagelayers.io/webdestroya/postgres-s3-snapshot:latest.svg)](https://imagelayers.io/?images=webdestroya/postgres-s3-snapshot:latest 'Get your own badge on imagelayers.io')
 
-This container can be used to easily manage Elasticsearch snapshots.
+This container can be used to easily take snapshots of your Postgres database and upload them to Amazon S3
 
 ## Environment Variables
 
-* `ELASTICSEARCH_URL` *(default: `http://elasticsearch-9200.service.consul:9200`)*
-  * The URL to reach your Elasticsearch server.
-  * **NOTE**: This must be the **entire** hostname or IP. Hostnames that expect a search domain to be added will not work.
-* `ESS_ABORT_IF_EMPTY` *(default: true)*
-  * This will abort the snapshot process if there are no indices on the server.
-  * This is useful if you just bootstrapped a cluster, and want to restore before doing any backups. The repository will still be created, but no snapshots will be created until there are indices on the server.
-* `ESS_CREATE_IF_MISSING` *(defaut: false)*
-  * If this is `true` and the snapshot repository does not exist, then attempt to create it. See the [Repository Auto-Creation](#repository-auto-creation) section for more information.
-* `ESS_MAX_SNAPSHOTS` *(defaut: 0)*
-  * The maximum number of snapshots to allow. Set to `0` to disable entirely.
-  * Note: Only snapshots with a `scheduled-` prefix will be counted and deleted. All other snapshots will not count against this limit.
-* `ESS_REPO_NAME` **required**
-  * The name of the repository to create snapshots under.
-* `ESS_WAIT_FOR_COMPLETION` *(default: true)*
-  * Whether the execution should wait until the snapshot has been created before exiting.
+
+#### Database Connection Variables
+
+* `DATABASE_URL`
+  * A connection URI to access the database
+  * Example: `postgres://user:password@host:5432/database`
+
+Alternatively, you may provide the individual connection values:
+
+* `DB_NAME` **required** - the database name
+* `DB_USER` **required** - the username
+* `DB_PASS` **required** - the password
+* `DB_HOST` **required** - the hostname ONLY (do not include the port)
+* `DB_PORT` *(default: 5432)*
 
 
-#### Repository Auto-Creation
+#### S3 Settings
 
-If `ESS_CREATE_IF_MISSING` is set to `true` then the following are relevant:
+* `S3_BUCKET` **required**
+* `S3_ACL` *(default: private)*
+* `S3_PREFIX` *(default: `scheduled-`)*
+  * If you want to prefix your snapshots and place them in a specific path, you may enter it here.
+  * Prefixes MUST NOT start with a slash (`/`)
+  * The backup timestamp will be appended to the prefix.
 
-* `ESS_REPO_TYPE` **required**
-  * The repository type field. Common ones include `fs` and `s3`.
-* `ESS_REPO_SETTINGS_<SETTING>` *optional*
-  * Add an environment variable per setting key to build the repository creation payload.
-  * If there are no `ESS_REPO_SETTINGS_*` variables found, then the settings hash will be `{}`.
+The easiest way to configure permissions is by using an IAM instance role, and granting the instance running the snapshot the ability to upload objects to the specified S3 bucket. If that is not possible, then you can provide your credentials using the following environment variables:
 
-An example creation payload construction:
+* `S3_ACCESS_KEY`
+* `S3_SECRET_KEY`
 
-```text
-ESS_CREATE_IF_MISSING=true
-ESS_REPO_TYPE=s3
-ESS_REPO_SETTINGS_BUCKET=mybucket
-ESS_REPO_SETTINGS_COMPRESS=true
-ESS_REPO_SETTINGS_BASE_PATH=/path/to/put/snapshots
-```
+#### Advanced Settings
 
-Would result in a payload of:
+* `DUMP_FOLDER` *(default: `/tmp`)*
+  * This is the local folder where the temporary dumpfile will be written. After it is uploaded to S3, it will be deleted.
+* `DUMP_FORMAT` *(default: custom)*
+  * You can change the dump format used by `pg_dump`. If you are planning to use `pg_restore` to recover, you should stick with the default of `custom`.
+* `THREADS` *(default: 1)*
+  * The number of tables to dump concurrently. Increasing this will reduce backup time, but increase load on the server.
 
-```json
-{
-  "type":"s3",
-  "settings": {
-    "bucket": "mybucket",
-    "compress": "true",
-    "base_path": "/path/to/put/snapshots"
-  }
-}
-```
 
-For more details about repository creation, see the [Elasticsearch documentation](https://www.elastic.co/guide/en/elasticsearch/reference/1.6/modules-snapshots.html#_repositories)
+You can read a more detailed explanation about these options on the [pg_dump documentation](http://www.postgresql.org/docs/9.4/static/app-pgdump.html).
+
+If your main docker location does not have enough space, you will need to change the `DUMP_FOLDER` variable and mount a host directory into your container. You should include `ExecStartPost=-/usr/bin/rm -f /host/folder/snapshot.dump` in your service file just in case something goes wrong.
+
+**IMPORTANT**: If you mount a host folder, you are completely responsible for ensuring that two snapshot tasks are not accessing the same host folder at the same time. If a second instance starts changing the backup file while it is being uploaded or exported, bad things can happen.
 
 ## Usage
 This is best used with a timer and service combination in your cluster.
@@ -68,7 +62,7 @@ This is best used with a timer and service combination in your cluster.
 Description=PostgreSQL Scheduled Snapshot Timer
 
 [Timer]
-OnCalendar=hourly
+OnCalendar=daily
 Persistent=false
 
 [Install]
@@ -93,11 +87,10 @@ Type=simple
 ExecStartPre=-/usr/bin/docker pull webdestroya/postgres-s3-snapshot
 
 ExecStart=/usr/bin/docker run --rm=true \
-  -e ELASTICSEARCH_URL=http://elasticsearch-9200.service.consul:9200 \
-  -e ESS_REPO_NAME=s3_repository \
-  -e ESS_MAX_SNAPSHOTS=100 \
-  -e ESS_WAIT_FOR_COMPLETION=true \
-  webdestroya/elasticsearch-snapshot
+  -e DATABASE_URL=postgres://postgres:mypassword@superdb-server.ec2:5432/database \
+  -e S3_BUCKET=postgres-snapshots \
+  -e S3_PREFIX=cluster1-snaps/ \
+  webdestroya/postgres-s3-snapshot
 
 [Install]
 WantedBy=multi-user.target
@@ -106,5 +99,7 @@ WantedBy=multi-user.target
 Conflicts=%p.service
 ```
 
-## Useful Plugins
-This tool was built primarily for the [cloud-aws](https://github.com/elastic/elasticsearch-cloud-aws) Elasticsearch plugin.
+## Roadmap
+
+* Ability to prune older snapshots based on date or based on total number
+* Allow for S3 Server Side Encryption

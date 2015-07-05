@@ -6,7 +6,7 @@ RUN apt-get -qq update && \
   DEBIAN_FRONTEND=noninteractive apt-get -qy --no-install-recommends install \
     curl \
     postgresql-client-common \
-    postgresql-client-9.3 \
+    postgresql-client \
     python-pip && \
   pip install awscli && \
   apt-get -qy clean autoclean autoremove && \
